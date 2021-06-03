@@ -1,0 +1,41 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2578
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww28600\viewh16380\viewkind0
+\pard\tx566\tx1133\tx1700\tx2267\tx2834\tx3401\tx3968\tx4535\tx5102\tx5669\tx6236\tx6803\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 Implementation decisions:\
+\
+1. The implementation is optimised for faster processing of market data as compared to retrievals. Get operations are somewhat compute-bound but that is the trade-off I had to make to keep the code simple and low thread contention. I am constructing the best price on each get request based on a ConcurrentHashMap and simply adding/updating the ticks to the map inside the update method. An alternate solution could be to construct the best price on each tick instead and simply return a price in get methods backed by volatile fields to ensure visibility. I have described the downside to that approach inside the alternate implementation section. \
+\
+2. I am using a map to persist the prices to ensure that if a new tick invalidates the prices for a source which \'93was\'94 the source of the current best price, I  can fall back on other sources to build a price.\
+\
+3. I have used ConcurrentHashMap as the underlying implementation offers highly concurrent writes and fully concurrent reads. The newer implementation further optimizes the performance by replacing lock striping with a combination of Compare-And-Swap instructions, and volatile gets and puts. Though in this specific use case we only have 3 liquidity providers (using the source as a key for the hashmap), it does offer flexibility if more LPs are onboarded. There are other non-blocking techniques available like ring buffers but I have tried to limit it to core multithreading constructs.\
+\
+4. Even though mutable classes can become difficult to contain and may create thread safety issues, I have "not" made MarketTick class immutable. This is to limit the number of objects which may get created while processing updatePrices(). A new MarketTick is only added to the map when the first tick is received for a source, and thereafter only ever updated (single mutator). There are no deletions on the map. I have tried not to create unnecessary objects and the use of enum is one such e.g. inside getBestPrices(), so I do not need to return a new MarketTick object as a response. \
+\
+5. All the other 3 interface implementations use ConcurrentHashMap\'92s \'93values\'94 view which is weakly-consistent and never throws ConcurrentModificationException. There is no blocking while performing any of the reads. I have put more details in the assumption section (pt 2).\
+\
+6. For minor optimizations - I am calculating bestBid & bidOffer in parallel using executor service with a fixed threadpool size based on the core available, and using a single static instance to return an empty price (0, 0) in failure scenarios\
+\
+7. I have put all the re-usable logic inside a private static inner class to better encapsulate the code than to create a helper class with static methods which may have looked slightly neater.\
+\
+8. I wanted to add a few test cases which check the concurrency of the solution but I could not think of a valid assertion to write to confirm that the retrievals are correct.\
+\
+\
+Alternate implementation:\
+\
+1) An alternate I thought was to keep separate maps for bid and ask. The key would be the source and value (bid/ask) would be a sorted data structure, making the price retrievals simpler.\
+\
+2) Another approach is to construct the best price inside the update method and keep the getters simple (volatile fields as there is a single thread updating and all we need is visibility guarantee) but that would add contention to the update method. The chosen implementation is fairly low blocking in comparison. Also, the use of ConcurrentHashMap would be difficult in that case as there will be compound operations.\
+\
+\
+\
+Assumptions:\
+\
+1. The implementation assumes that there will not be long pauses with price updates and/or more \'93get\'94 requests in comparison. If that is not the case, optimization may be needed to cache best prices and not repeat price construction calculation as there is no change in underlying market data. The challenge will be to not to introduce more blocking and complicate the implementation.\
+\
+2. Handling price crosses: I have assumed we cannot form a price when bid & offer cross and return a 0. An alternate could be that I do not include the specific source tick and give a price based on available source (s) till we receive new tick data. I am aware that this is quite a common scenario with a faulty/slow LP or in case of a sudden price jump and there are different schemes to deal with it.\
+\
+3. Since ConcurrentHashMap.values() may keep picking the underlying updates on the map even after its creation, there is a possibility that reads inside helper method getBestPrice() to calculate maxBid & minAsk may pick different tick data - assuming that is acceptable. Else another option is to create a disconnected view using something like List.copyOf(). copyOf is a factory method and may create new instances or reuse existing ones, adding to the heap allocation.}
